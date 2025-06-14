@@ -1,70 +1,80 @@
-import os
 import PyPDF2
 import json
+import re
 import traceback
+import pandas as pd
+from tqdm import tqdm
+from mcqgenrator.MCQGenrator import generate_evaluate_chain
 
 def read_file(file):
     if file.name.endswith(".pdf"):
         try:
-            pdf_reader=PyPDF2.PdfReader(file)
-            text=""
-            for page in pdf_reader.pages:
-                text+=page.extract_text()
-            return text
-            
+            pdf_reader = PyPDF2.PdfReader(file)
+            return "".join(page.extract_text() for page in pdf_reader.pages if page.extract_text())
         except Exception as e:
-            raise Exception("error reading the PDF file")
-        
+            raise Exception("Error reading the PDF file") from e
     elif file.name.endswith(".txt"):
         return file.read().decode("utf-8")
-    
     else:
-        raise Exception(
-            "unsupported file format only pdf and text file suppoted"
-            )
-import json
-import re
-import traceback
+        raise Exception("Unsupported file format: only PDF and text files are supported.")
+
+def chunk_text(text, max_words=500):
+    words = text.split()
+    for i in range(0, len(words), max_words):
+        yield ' '.join(words[i:i + max_words])
 
 def get_table_data(quiz_str):
     try:
         if not quiz_str or not quiz_str.strip():
-            print("⚠️ Empty quiz_str")
             return None
-
-        # Extract all individual JSON objects using regex
         json_objects = re.findall(r'({\s*".+?"\s*:\s*{.*?}})', quiz_str, re.DOTALL)
-
-        if not json_objects:
-            print("❌ No valid JSON objects found in the quiz string.")
-            print("quiz_str:", quiz_str)
-            return None
-
-        # Merge all extracted JSON strings into one combined dictionary
         quiz_dict = {}
         for obj_str in json_objects:
             try:
                 obj = json.loads(obj_str)
                 quiz_dict.update(obj)
-            except json.JSONDecodeError as err:
-                print("⚠️ Skipping invalid object:", obj_str)
-                print("Error:", err)
-
+            except json.JSONDecodeError:
+                continue
         quiz_table_data = []
         for key, value in quiz_dict.items():
             mcq = value.get("mcq", "")
-            options = " || ".join([
-                f"{opt} -> {text}" for opt, text in value.get("options", {}).items()
-            ])
+            options = " || ".join([f"{opt} -> {text}" for opt, text in value.get("options", {}).items()])
             correct = value.get("correct", "")
-            quiz_table_data.append({
-                "MCQ": mcq,
-                "Choices": options,
-                "Correct": correct
-            })
-
+            quiz_table_data.append({"MCQ": mcq, "Choices": options, "Correct": correct})
         return quiz_table_data
-
     except Exception as e:
         traceback.print_exception(type(e), e, e.__traceback__)
         return None
+
+def process_file(file, number, subject, tone, response_json):
+    try:
+        full_text = read_file(file)
+        results = []
+        for chunk in tqdm(chunk_text(full_text)):
+            output = generate_evaluate_chain.invoke({
+                "text": chunk,
+                "number": number,
+                "subject": subject,
+                "tone": tone,
+                "response_json": response_json
+            })
+
+            results.append(output)
+        return results
+    except Exception as e:
+        traceback.print_exception(type(e), e, e.__traceback__)
+        return None
+
+def save_all_mcqs(results, output_file="final_mcqs.csv"):
+    all_mcq_data = []
+    for result in results:
+        if isinstance(result, dict):
+            quiz = result.get("quiz", "")
+        else:
+            quiz = result
+        table_data = get_table_data(quiz)
+        if table_data:
+            all_mcq_data.extend(table_data)
+    df = pd.DataFrame(all_mcq_data)
+    df.to_csv(output_file, index=False)
+    print(f"✅ MCQs saved to {output_file}")

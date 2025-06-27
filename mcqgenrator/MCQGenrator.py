@@ -13,7 +13,7 @@ from langchain.chains import LLMChain, SequentialChain
 
 # Load environment variables from the .env file
 load_dotenv()
-key = os.getenv("OPENAI_API_KEY")
+key = os.getenv("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")
 
 # Initialize Groq LLM
 llm = ChatGroq(
